@@ -1,0 +1,32 @@
+[project]
+name = "derezz"
+version = "0.1.0"
+description = "Video search powered by Daft and S3 Tables."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "daft[aws,iceberg]>=0.5.14",
+    "imagehash>=4.3.2",
+    "opencv-python>=4.12.0.88",
+    "pillow>=11.3.0",
+    "torch>=2.7.1",
+    "transformers>=4.54.1",
+    "ultralytics>=8.3.170",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+]
+
+[project.scripts]
+derezz = "derezz.__main__:main"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+minversion = "6.0"
+testpaths = ["tests"]
+
+
+[tool.setuptools.packages.find]
+include = ["derezz"]
