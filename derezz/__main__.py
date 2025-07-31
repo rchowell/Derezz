@@ -1,13 +1,14 @@
 import argparse
 import sys
+import os
 from pathlib import Path
 
-from derezz.find import find
+from derezz.catalog import load_catalog
+from derezz.find import find, open_, ls
 from derezz.index import index
 
 
 def main():
-
     #
     # derezz index|find
     #
@@ -27,19 +28,38 @@ def main():
     parser_index.add_argument("path", type=str, help="Path to the video file to index.")
 
     #
-    # derezz find <term>
+    # derezz find <pattern>
     #
 
     parser_find = subparsers.add_parser(
         "find", help="Find videos with the specific items."
     )
-    parser_find.add_argument("term", type=str, help="Search term.")
+    parser_find.add_argument("pattern", type=str, help="Search pattern.")
+
+    #
+    # derezz ls
+    #
+    parser_ls = subparsers.add_parser("ls", help="List indexed labels.")
+
+    #
+    # derezz open <pattern>
+    #
+
+    parser_open = subparsers.add_parser("open", help="Open the search hits as images.")
+    parser_open.add_argument("pattern", type=str, help="Search pattern.")
+
+    stage = os.environ.get("DEREZZ_STAGE", "dev")
+    catalog = load_catalog(stage)
 
     args = parser.parse_args()
     if args.command == "index":
-        index(Path(args.path))
+        index(catalog, Path(args.path))
+    elif args.command == "ls":
+        ls(catalog)
     elif args.command == "find":
-        find(args.items)
+        find(catalog, args.pattern)
+    elif args.command == "open":
+        open_(catalog, args.pattern)
     else:
         parser.print_help()
         sys.exit(1)

@@ -17,6 +17,7 @@ from daft.io.pushdowns import Pushdowns
 from daft.schema import Schema
 from daft.datatype import DataType, ImageMode
 from daft.recordbatch import MicroPartition
+from daft.expressions import Expression
 from daft.series import Series
 
 from dataclasses import dataclass
@@ -40,6 +41,36 @@ FeatureType = DataType.struct(
         "bbox": DataType.fixed_size_list(DataType.int64(), 4),  # x1, y1, x2, y2
     }
 )
+
+
+def get_cachedir() -> Path:
+    return Path.home() / ".derezz" / "cache"
+
+
+def get_tempdir() -> Path:
+    import time
+    timestamp = int(time.time())
+    tempdir = get_cachedir() / str(timestamp)
+    tempdir.mkdir(parents=True, exist_ok=True)
+    return tempdir
+
+
+@daft.udf(return_dtype=DataType.binary())
+def to_jpg(images: Series) -> list[bytes]:
+    """Encodes the RGB vector to JPEG bytes."""
+    return [ cv2.imencode('.jpg', image)[1].tobytes() for image in images ]
+
+
+@daft.udf(return_dtype=DataType.binary())
+def draw_box(images: Series, bboxes: Series, color = (255, 0, 0)):
+    """Draws the bbox[min_x, min_y, max_x, max_y] on the JPEG encoded image."""
+    def draw_box_on_image(image, bbox):
+        img = image.copy()
+        if bbox is not None:
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            cv2.rectangle(img, (x1, y1), (x2, y2), thickness=2)
+        return cv2.imencode('.jpg', img)[1].tobytes()
+    return [draw_box_on_image(image, bbox) for image, bbox in zip(images, bboxes)]
 
 
 @daft.udf(
@@ -73,6 +104,11 @@ class ExtractImageFeatures:
 
 
 extract_image_features = ExtractImageFeatures
+
+
+def items(projections: dict[str, Expression]) -> list[Expression]:
+    """Helper to convert projection items (dict) into a projection item list."""
+    return [ expr.alias(alias) for (alias, expr) in projections.items() ]
 
 
 @dataclass

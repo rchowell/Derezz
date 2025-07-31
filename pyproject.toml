@@ -9,6 +9,7 @@ dependencies = [
     "imagehash>=4.3.2",
     "opencv-python>=4.12.0.88",
     "pillow>=11.3.0",
+    "pyiceberg[sql-sqlite]>=0.9.1",
     "torch>=2.7.1",
     "transformers>=4.54.1",
     "ultralytics>=8.3.170",
