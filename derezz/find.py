@@ -1,11 +1,11 @@
 import webbrowser
 import warnings
+import base64
 
 from daft import col
 from daft.catalog import Catalog
-from daft.expressions import lit
 
-from derezz.util import get_tempdir
+from derezz.util import get_tempdir, draw_box
 
 warnings.filterwarnings('ignore')
 
@@ -35,11 +35,13 @@ def open_(catalog: Catalog, pattern: str) -> None:
     terms = get_terms(pattern)
     df = catalog.read_table("test.features")
     df = df.filter(col("ft_label").is_in(terms))
+    df = df.with_column("ft_image", draw_box(df["ft_image"], df["ft_bbox"]))
 
     # materialize and cache all results images so we can open them in file explorer
     out_dir = get_tempdir()
     for row in df.to_pylist():
-        fname = f"{row['v_name']}-{row['f_number']}.jpg"
+        prefix = base64.urlsafe_b64encode(row['v_uuid']).decode('ascii').rstrip("=")
+        fname = f"{prefix}-{row['f_number']}.jpg"
         fpath = out_dir / fname
         with open(fpath, "wb") as f:
             print(f"Writing {fpath}")

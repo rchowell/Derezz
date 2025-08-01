@@ -39,7 +39,7 @@ def main():
     #
     # derezz ls
     #
-    parser_ls = subparsers.add_parser("ls", help="List indexed labels.")
+    _ = subparsers.add_parser("ls", help="List indexed labels.")
 
     #
     # derezz open <pattern>
@@ -53,7 +53,7 @@ def main():
 
     args = parser.parse_args()
     if args.command == "index":
-        index(catalog, Path(args.path))
+        index(catalog, args.path)
     elif args.command == "ls":
         ls(catalog)
     elif args.command == "find":

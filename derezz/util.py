@@ -1,9 +1,12 @@
 import cv2
 from pathlib import Path
 import logging
+import os
 
 import torch
 import imagehash
+import yt_dlp
+import numpy as np
 
 from torchvision import transforms
 
@@ -58,26 +61,22 @@ def get_tempdir() -> Path:
 @daft.udf(return_dtype=DataType.binary())
 def to_jpg(images: Series) -> list[bytes]:
     """Encodes the RGB vector to JPEG bytes."""
-    return [ cv2.imencode('.jpg', image)[1].tobytes() for image in images ]
+    return [ cv2.imencode(".jpg", image)[1].tobytes() for image in images ]
 
 
 @daft.udf(return_dtype=DataType.binary())
-def draw_box(images: Series, bboxes: Series, color = (255, 0, 0)):
+def draw_box(images: Series, bboxes: Series, color = (255, 0, 255)): # magenta
     """Draws the bbox[min_x, min_y, max_x, max_y] on the JPEG encoded image."""
     def draw_box_on_image(image, bbox):
-        img = image.copy()
+        img = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_COLOR)
         if bbox is not None:
             x1, y1, x2, y2 = [int(v) for v in bbox]
-            cv2.rectangle(img, (x1, y1), (x2, y2), thickness=2)
-        return cv2.imencode('.jpg', img)[1].tobytes()
+            cv2.rectangle(img, (x1, y1), (x2, y2), color=color, thickness=2)
+        return cv2.imencode(".jpg", img)[1].tobytes()
     return [draw_box_on_image(image, bbox) for image, bbox in zip(images, bboxes)]
 
 
-@daft.udf(
-    return_dtype=DataType.list(FeatureType),
-    concurrency=1,
-    num_gpus=1,
-)
+@daft.udf(return_dtype=DataType.list(FeatureType))
 class ExtractImageFeatures:
     def __init__(self) -> None:
         self.model = YOLO("yolo11n.pt")
@@ -85,6 +84,8 @@ class ExtractImageFeatures:
             self.model.to("cuda")
 
     def __call__(self, images: Series) -> list[list[Feature]]:
+        if (len(images) == 0):
+            return []
         # convert daft images into a pytorch stack
         batch = [to_tensor(Image.fromarray(image)) for image in images]
         stack = torch.stack(batch, dim=0)
@@ -113,8 +114,15 @@ def items(projections: dict[str, Expression]) -> list[Expression]:
 
 @dataclass
 class VideoSource(DataSource):
-    filepath: Path
-    image_mode: ImageMode
+    """
+    DataSource for reading video files and streaming frames as images.
+
+    Attributes:
+        filepath (str): Path to the video file.
+        image_height (int): Height to which each frame will be resized.
+        image_width (int): Width to which each frame will be resized.
+    """
+    filepath: str
     image_height: int
     image_width: int
 
@@ -124,55 +132,52 @@ class VideoSource(DataSource):
 
     @property
     def schema(self) -> Schema:
-        return self.get_schema(
-            image_mode=self.image_mode,
-            image_height=self.image_height,
-            image_width=self.image_width,
-        )
-
-    def get_tasks(self, pushdowns: Pushdowns) -> Iterator[DataSourceTask]:
-        yield VideoSourceTask(
-            filepath=self.filepath,
-            image_mode=self.image_mode,
-            image_height=self.image_height,
-            image_width=self.image_width,
-        )
-
-    @classmethod
-    def get_schema(
-        cls, image_mode: ImageMode, image_height: int, image_width: int
-    ) -> Schema:
-        """Classmethod so the task can also use this, schema never changes for a VideoSource."""
         return Schema.from_pydict(
             {
                 "frame_number": DataType.int64(),
                 "frame_size_bytes": DataType.int64(),
                 "timestamp_ms": DataType.int64(),
-                "pts": DataType.int64(),  # Presentation timestamp
-                "dts": DataType.int64(),  # Decode timestamp
+                "pts": DataType.int64(),  # presentation timestamp
+                "dts": DataType.int64(),  # decode timestamp
                 "fps": DataType.float64(),
                 "data": DataType.image(
-                    height=image_height,
-                    width=image_width,
-                    mode=image_mode,
+                    height=self.image_height,
+                    width=self.image_width,
+                    mode=ImageMode.RGB,
                 ),
             }
+        )
+
+    def get_tasks(self, pushdowns: Pushdowns) -> Iterator[DataSourceTask]:
+        yield VideoSourceTask(
+            filepath=self.filepath,
+            image_height=self.image_height,
+            image_width=self.image_width,
         )
 
 
 @dataclass
 class VideoSourceTask(DataSourceTask):
-    filepath: Path
-    image_mode: ImageMode
+    filepath: str
     image_height: int
     image_width: int
 
     @property
     def schema(self) -> Schema:
-        return VideoSource.get_schema(
-            image_mode=self.image_mode,
-            image_height=self.image_height,
-            image_width=self.image_width,
+        return Schema.from_pydict(
+            {
+                "frame_number": DataType.int64(),
+                "frame_size_bytes": DataType.int64(),
+                "timestamp_ms": DataType.int64(),
+                "pts": DataType.int64(),  # presentation timestamp
+                "dts": DataType.int64(),  # decode timestamp
+                "fps": DataType.float64(),
+                "data": DataType.image(
+                    height=self.image_height,
+                    width=self.image_width,
+                    mode=ImageMode.RGB,
+                ),
+            }
         )
 
     def create_empty_partition(self):
@@ -186,11 +191,46 @@ class VideoSourceTask(DataSourceTask):
             "data": [],
         }
 
+    def download_youtube_video(self, quality="best[height<=720]", audio=False) -> str:
+        url = self.filepath
+        cache_dir = get_cachedir()
+        tempfile = os.path.join(cache_dir, f"youtube_{hash(url) % 10000}.%(ext)s")
+        logger.info(f"Downloading youtube video to {tempfile}...")
+
+        if audio:
+            format_str = quality
+        else:
+            # try best non-AV1, then fallback to best non-AV1
+            format_str = f"{quality}[vcodec!*=av01]/best[vcodec!*=av01]"
+
+        ydl_opts = {
+            "outtmpl": tempfile,
+            "format": format_str,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                # title = info.get("title", "video")
+                ext = info.get("ext", "mp4")
+                ydl.download([url])
+                return tempfile.replace("%(ext)s", ext)
+        except Exception as e:
+            raise Exception(f"Failed to download video: {str(e)}")
+
+
     def get_micro_partitions(self) -> Iterator[MicroPartition]:
-        cap = cv2.VideoCapture(str(self.filepath))
+        if ("youtube.com" in str(self.filepath)):
+            filepath = self.download_youtube_video()
+        else:
+            filepath = self.filepath
+
+        cap = cv2.VideoCapture(str(filepath))
 
         if not cap.isOpened():
-            logger.error(f"Failed to open video file {self.filepath}")
+            logger.error(f"Failed to open video file {filepath}")
             return
 
         try:
@@ -220,8 +260,7 @@ class VideoSourceTask(DataSourceTask):
                     pts_us = timestamp_ms * 1000  # ms to us
                     dts_us = pts_us
 
-                    # get frame in the 
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame_rgb = frame # already RGB
                     frame_resized = cv2.resize(
                         frame_rgb,
                         (self.image_width, self.image_height),

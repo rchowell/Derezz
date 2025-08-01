@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from daft.catalog import Catalog
 
 from typing import Literal
+
+from derezz.util import get_cachedir
 
 from pyiceberg.catalog import load_catalog as _load_catalog
 from pyiceberg.catalog import Catalog as PyIcebergCatalog
@@ -32,21 +32,21 @@ videos_table_schema = PyIcebergSchema(
     NestedField(3, "v_location", StringType(), required=True)
 )
 
-frames_table_schema = PyIcebergSchema(
-    NestedField(1, "v_uuid", FixedType(16), required=True),  # <-- partition!
-    NestedField(2, "v_name", StringType(), required=True),
-    NestedField(3, "f_number", LongType(), required=True),
-    NestedField(4, "f_image", BinaryType(), required=True),
-)
+# frames_table_schema = PyIcebergSchema(
+#     NestedField(1, "v_uuid", FixedType(16), required=True),  # <-- partition!
+#     NestedField(2, "v_name", StringType(), required=True),
+#     NestedField(3, "f_number", LongType(), required=True),
+#     NestedField(4, "f_image", BinaryType(), required=True),
+# )
 
-frames_table_partitioning = PartitionSpec(
-    PartitionField(
-        source_id=1,
-        field_id=1000,
-        transform=IdentityTransform(),
-        name="v_uuid"
-    )
-)
+# frames_table_partitioning = PartitionSpec(
+#     PartitionField(
+#         source_id=1,
+#         field_id=1000,
+#         transform=IdentityTransform(),
+#         name="v_uuid"
+#     )
+# )
 
 features_table_schema = PyIcebergSchema(
     NestedField(1, "v_uuid", FixedType(16), required=True),
@@ -74,7 +74,7 @@ features_table_partitioning = PartitionSpec(
 
 def load_catalog(stage: Stage) -> Catalog:
     if stage == "prod":
-        raise NotImplementedError()
+        catalog = _load_catalog_prod("arn:aws:s3tables:us-west-2:941892620273:bucket/derezz")
     else:
         catalog = _load_catalog_dev()
     catalog.create_namespace_if_not_exists("test")
@@ -82,11 +82,11 @@ def load_catalog(stage: Stage) -> Catalog:
         identifier="test.videos",
         schema=videos_table_schema,
     )
-    catalog.create_table_if_not_exists(
-        identifier="test.frames",
-        schema=frames_table_schema,
-        partition_spec=frames_table_partitioning,
-    )
+    # catalog.create_table_if_not_exists(
+    #     identifier="test.frames",
+    #     schema=frames_table_schema,
+    #     partition_spec=frames_table_partitioning,
+    # )
     catalog.create_table_if_not_exists(
         identifier="test.features",
         schema=features_table_schema,
@@ -97,7 +97,7 @@ def load_catalog(stage: Stage) -> Catalog:
 
 def _load_catalog_dev() -> PyIcebergCatalog:
     """Loads the sqlite development catalog."""
-    warehouse_dir = Path.home() / ".derezz" / "warehouse"
+    warehouse_dir = get_cachedir() / "warehouse"
     warehouse_dir.mkdir(parents=True, exist_ok=True)
     warehouse_path = str(warehouse_dir)
     return _load_catalog(
@@ -106,5 +106,22 @@ def _load_catalog_dev() -> PyIcebergCatalog:
             "type": "sql",
             "uri": f"sqlite:///{warehouse_path}/pyiceberg_catalog.db",
             "warehouse": f"file://{warehouse_path}",
+        },
+    )
+
+
+def _load_catalog_prod(table_bucket_arn: str) -> PyIcebergCatalog:
+    arn_parts = table_bucket_arn.split(":")
+    region = arn_parts[3]
+    bucket = arn_parts[5][7:]
+    return _load_catalog(
+        bucket,
+        **{
+            "type": "rest",
+            "warehouse": table_bucket_arn,
+            "uri": f"https://s3tables.{region}.amazonaws.com/iceberg",
+            "rest.sigv4-enabled": "true",
+            "rest.signing-name": "s3tables",
+            "rest.signing-region": region,
         },
     )
